@@ -1,0 +1,111 @@
+=== Cell 13 (code) ===
+# ============================================================
+# 4.5. Đo hàm LOSS của 4 model (LR + RF + AdaBoost + XGBoost) trên X_val
+# - LR / RF / AdaBoost (scikit-learn) KHÔNG lưu loss history
+#   -> tính log_loss sau khi fit từ predict_proba.
+# - XGBoost có thể lấy loss history từng booster (evals_result).
+# ============================================================
+import numpy as np
+from sklearn.metrics import log_loss
+from sklearn.base import clone
+from sklearn.pipeline import Pipeline
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier, AdaBoostClassifier
+
+assert 'X_train' in globals() and 'y_train' in globals(), "Chưa có X_train/y_train — chạy Bước 1"
+assert 'X_val' in globals() and 'y_val' in globals(), "Chưa có X_val/y_val — chạy Bước 1"
+assert 'preprocessor' in globals(), "Chưa có preprocessor — chạy Bước 1"
+
+n_pos = int((y_train == 1).sum())
+n_neg = int((y_train == 0).sum())
+spw = float(n_neg / n_pos)
+print(f"[4.5] n_pos={n_pos} n_neg={n_neg} scale_pos_weight={spw:.2f}")
+
+def _logloss(clf, name):
+    pipe = Pipeline([('pre', clone(preprocessor)), ('clf', clf)])
+    pipe.fit(X_train, y_train)
+    proba = pipe.predict_proba(X_val)[:, 1]
+    loss = log_loss(y_val, proba)
+    print(f"  {name:42s} | log_loss(val) = {loss:.4f}")
+    return loss
+
+losses = {}
+# --- 1. LogisticRegression ---
+losses['LogisticRegression'] = _logloss(
+    LogisticRegression(class_weight='balanced', max_iter=1000, random_state=42),
+    'LogisticRegression (balanced)')
+
+# --- 2. RandomForest ---
+losses['RandomForest'] = _logloss(
+    RandomForestClassifier(n_estimators=200, class_weight='balanced',
+                           random_state=42, n_jobs=-1),
+    'RandomForest (200, balanced)')
+
+# --- 3. AdaBoost ---
+losses['AdaBoost'] = _logloss(
+    AdaBoostClassifier(n_estimators=200, learning_rate=0.8, random_state=42),
+    'AdaBoost (200, lr=0.8)')
+
+# --- 4. XGBoost — có loss history theo từng booster ---
+try:
+    from xgboost import XGBClassifier
+    _xgb_clf = XGBClassifier(n_estimators=300, scale_pos_weight=spw,
+                             random_state=42, n_jobs=-1, eval_metric='logloss')
+    # eval_set phải là dữ liệu ĐÃ transform (qua preprocessor)
+    _pre = clone(preprocessor).fit(X_train, y_train)
+    X_train_t, X_val_t = _pre.transform(X_train), _pre.transform(X_val)
+    evals_result = {}
+    _xgb_clf.fit(X_train_t, y_train,
+                 eval_set=[(X_val_t, y_val)],
+                 evals_result=evals_result,
+                 verbose=False)
+    pipe_xgb = Pipeline([('pre', _pre), ('clf', _xgb_clf)])
+    proba = pipe_xgb.predict_proba(X_val)[:, 1]
+    losses['XGBoost'] = log_loss(y_val, proba)
+    # XGBoost >= 1.6 dùng 'validation_0', cũ dùng 'eval_0'
+    hist_key = 'validation_0' if 'validation_0' in evals_result else 'eval_0'
+    hist = evals_result[hist_key]['logloss']
+    print(f"  {'XGBoost (300, scale_pos_weight~7.6)':42s} | log_loss(val) = {losses['XGBoost']:.4f}")
+    print(f"  [XGB loss history] n_estimators = {len(hist)}")
+    print(f"    first 5 : {[round(h, 4) for h in hist[:5]]}")
+    print(f"    last  5 : {[round(h, 4) for h in hist[-5:]]}")
+    print(f"    min loss = {min(hist):.4f} (booster #{hist.index(min(hist)) + 1})")
+except ImportError:
+    print("  [bỏ qua] xgboost chưa cài")
+
+print("--- Tóm tắt log_loss(val) ---")
+for k, v in losses.items():
+    print(f"  {k:20s}: {v:.4f}")
+
+
+=== OUTPUTS ===
+[4.5] n_pos=3702 n_neg=27945 scale_pos_weight=7.55
+/usr/local/lib/python3.13/dist-packages/sklearn/linear_model/_logistic.py:465: ConvergenceWarning: lbfgs failed to converge (status=1):
+STOP: TOTAL NO. OF ITERATIONS REACHED LIMIT.
+
+Increase the number of iterations (max_iter) or scale the data as shown in:
+    https://scikit-learn.org/stable/modules/preprocessing.html
+Please also refer to the documentation for alternative solver options:
+    https://scikit-learn.org/stable/modules/linear_model.html#logistic-regression
+  n_iter_i = _check_optimize_result(
+  LogisticRegression (balanced)              | log_loss(val) = 0.4135
+  RandomForest (200, balanced)               | log_loss(val) = 0.2024
+  AdaBoost (200, lr=0.8)                     | log_loss(val) = 0.4991
+ERROR TRACEBACK:
+[0;31m---------------------------------------------------------------------------[0m
+[0;31mTypeError[0m                                 Traceback (most recent call last)
+[0;32m/tmp/ipykernel_7070/1071829022.py[0m in [0;36m<cell line: 0>[0;34m()[0m
+[1;32m     55[0m     [0mX_train_t[0m[0;34m,[0m [0mX_val_t[0m [0;34m=[0m [0m_pre[0m[0;34m.[0m[0mtransform[0m[0;34m([0m[0mX_train[0m[0;34m)[0m[0;34m,[0m [0m_pre[0m[0;34m.[0m[0mtransform[0m[0;34m([0m[0mX_val[0m[0;34m)[0m[0;34m[0m[0;34m[0m[0m
+[1;32m     56[0m     [0mevals_result[0m [0;34m=[0m [0;34m{[0m[0;34m}[0m[0;34m[0m[0;34m[0m[0m
+[0;32m---> 57[0;31m     _xgb_clf.fit(X_train_t, y_train,
+[0m[1;32m     58[0m                  [0meval_set[0m[0;34m=[0m[0;34m[[0m[0;34m([0m[0mX_val_t[0m[0;34m,[0m [0my_val[0m[0;34m)[0m[0;34m][0m[0;34m,[0m[0;34m[0m[0;34m[0m[0m
+[1;32m     59[0m                  [0mevals_result[0m[0;34m=[0m[0mevals_result[0m[0;34m,[0m[0;34m[0m[0;34m[0m[0m
+
+[0;32m/usr/local/lib/python3.13/dist-packages/xgboost/core.py[0m in [0;36minner_f[0;34m(*args, **kwargs)[0m
+[1;32m    567[0m             [0;32mfor[0m [0mk[0m[0;34m,[0m [0marg[0m [0;32min[0m [0mzip[0m[0;34m([0m[0msig[0m[0;34m.[0m[0mparameters[0m[0;34m,[0m [0margs[0m[0;34m)[0m[0;34m:[0m[0;34m[0m[0;34m[0m[0m
+[1;32m    568[0m                 [0mkwargs[0m[0;34m[[0m[0mk[0m[0;34m][0m [0;34m=[0m [0marg[0m[0;34m[0m[0;34m[0m[0m
+[0;32m--> 569[0;31m             [0;32mreturn[0m [0mfunc[0m[0;34m([0m[0;34m**[0m[0mkwargs[0m[0;34m)[0m[0;34m[0m[0;34m[0m[0m
+[0m[1;32m    570[0m [0;34m[0m[0m
+[1;32m    571[0m         [0;32mreturn[0m [0minner_f[0m[0;34m[0m[0;34m[0m[0m
+
+[0;31mTypeError[0m: XGBClassifier.fit() got an unexpected keyword argument 'evals_result'
